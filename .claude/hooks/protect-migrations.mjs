@@ -8,12 +8,30 @@ import { isAbsolute, resolve, relative, sep, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 
-/** realpath for things that exist; resolve-only for those that don't yet (new files). */
+/**
+ * Canonicalize a path: realpath the nearest existing ancestor (so symlinked directories
+ * and symlinked filenames resolve to their real target), then re-append the remainder
+ * that does not exist yet (a brand-new migration file, or a tracked file deleted from
+ * the working tree but still in git). Plain resolve() is not enough: a path through a
+ * symlink would keep its alias form and escape the db/migrations classification.
+ */
 function canonical(p) {
+  const abs = resolve(p);
   try {
-    return realpathSync(p);
+    return realpathSync(abs);
   } catch {
-    return resolve(p);
+    // find the longest existing prefix, realpath it, re-append the non-existent tail
+    const parts = abs.split(sep);
+    for (let i = parts.length - 1; i > 0; i--) {
+      const head = parts.slice(0, i).join(sep);
+      try {
+        return realpathSync(head) + sep + parts.slice(i).join(sep);
+      } catch {
+        if (dirname(head) === head) break; // reached the filesystem root, stop
+        // prefix doesn't exist either, walk further up
+      }
+    }
+    return abs;
   }
 }
 

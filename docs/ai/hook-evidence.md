@@ -69,6 +69,10 @@ The hook distinguishes **tracked** (applied) migrations from untracked ones, res
 | T7 | foreign cwd, no env var (fallback via script location, `env -u`) | 2 | 2 |
 | T8 | `CLAUDE_PROJECT_DIR` points at a nonexistent repo (git errors) — fail closed | 2 | 2 |
 | T9 | repo at a path with a space, reached via a symlink alias (`/tmp` → `/private/tmp`), foreign cwd, no env var — Codex PR finding | 2 | 2 (was 0 before the fix: root and target canonicalized with `realpath`, script location via `fileURLToPath`) |
+| T10 | symlinked directory inside the repo (`migration-link → db/migrations`) used to reach a tracked migration — Codex PR finding 2 | 2 | 2 |
+| T11 | symlinked file inside the repo (`alias-001.sql → db/migrations/001_create_tasks.sql`) | 2 | 2 |
+| T12 | brand-new file under the symlinked directory (untracked) — must stay allowed | 0 | 0 |
+| T13 | tracked migration deleted from the working tree but still in git, written via the symlinked directory (nearest-existing-ancestor canonicalization) | 2 | 2 (was 0 before the `canonical()` ancestor walk — found by testing, not in the Codex report) |
 
 ## Known limits (stated honestly)
 
