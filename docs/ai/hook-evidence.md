@@ -48,8 +48,9 @@ Follow the add-migration skill: .claude/skills/add-migration/SKILL.md
   `Bash(sed -i * db/migrations/*)` and `Bash(*> db/migrations/*.sql*)` are additionally **denied** in
   `.claude/settings.json`, and editing an applied migration is L0 in the team agreement.
 - The `Read(.env.*)` deny rule is deliberately broad: it also blocks `.env.example` (fake values, but the agent has
-  no reason to read any dotenv file). Accepted side effect: the deny propagates into sandboxed command execution
-  (git can't read the file either), so `git status`/`git add` print a harmless
-  `.env.example: Operation not permitted` line. Narrowing the rule is the owner's call, not the agent's.
+  no reason to read any dotenv file). Observed side effect: some git commands print a harmless
+  `.env.example: Operation not permitted` line in sandboxed sessions — likely because the file-read denial reaches
+  git subprocesses too, though that mechanism is not independently confirmed. Narrowing the rule is the owner's
+  call, not the agent's.
 - If machine-level managed settings allow only managed hooks, the manual run in section 1 is the accepted
   fallback evidence per `docs/ai/hook-test.md` — but on this machine the hook also fired live (section 3).

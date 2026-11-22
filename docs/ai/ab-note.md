@@ -31,9 +31,10 @@ afterwards — the diff was captured but the "tests green" box was never checked
   one task shape, and runs within an arm vary (A's own two runs differ by 45 % in cost). The plausible mechanism is
   that AGENTS.md and the path rule hand the agent the file layout and constraints, so it re-discovers less — the
   savings come from the instructions, not from the hook.
-- **The skill was followed, not just obeyed.** Both B runs' final output names the add-migration procedure ("Following
-  the `add-migration` skill (loaded at the start): next number 003, one concern per file, constraint in the SQL");
-  A runs invented their own plan each time (and the two A plans differed from each other).
+- **The skill was followed, not just obeyed.** B run 1's final output names the add-migration procedure explicitly
+  ("Following the `add-migration` skill (loaded at the start): next number 003, one concern per file, constraint in
+  the SQL"); run 2 cited the skill once but its transcript was not re-inspected in context. A runs invented their own
+  plan each time (and the two A plans differed from each other).
 - **Governed failure mode.** The hook (`protect-migrations`, exit 2) never had to fire in B: the agent went straight
   to a new `003_*.sql` because AGENTS.md and the path rule say so. Enforcement exists for the case where it doesn't —
   and is separately proven to fire (see [hook-evidence.md](hook-evidence.md), live block + exit 2). The hook's value
