@@ -26,24 +26,28 @@ afterwards — the diff was captured but the "tests green" box was never checked
 
 ## What changed
 
-- **Cost and turns dropped ~30–45 % in B** ($0.66/$0.96 → $0.47/$0.44; 27/37 → 26/25 turns) and input tokens more
-  than halved (79.7k/118k → 33.6k/30.6k): the harness's AGENTS.md points straight at `lib/tasks.ts` and the
-  migration rule, so the agent re-discovered less.
-- **The skill was followed, not just obeyed.** Both B runs' final output names the add-migration procedure and its
-  fresh-DB verification step; A runs invented their own plan each time (and the two A plans differed from each other).
+- **Directionally, cost and turns dropped in B** ($0.66/$0.96 → $0.47/$0.44; 27/37 → 26/25 turns) and input tokens
+  fell by more than half (79.7k/118k → 33.6k/30.6k). **Treat this as anecdotal, not a measured effect**: n=2 per arm,
+  one task shape, and runs within an arm vary (A's own two runs differ by 45 % in cost). The plausible mechanism is
+  that AGENTS.md and the path rule hand the agent the file layout and constraints, so it re-discovers less — the
+  savings come from the instructions, not from the hook.
+- **The skill was followed, not just obeyed.** Both B runs' final output names the add-migration procedure ("Following
+  the `add-migration` skill (loaded at the start): next number 003, one concern per file, constraint in the SQL");
+  A runs invented their own plan each time (and the two A plans differed from each other).
 - **Governed failure mode.** The hook (`protect-migrations`, exit 2) never had to fire in B: the agent went straight
   to a new `003_*.sql` because AGENTS.md and the path rule say so. Enforcement exists for the case where it doesn't —
-  and is separately proven to fire (see [hook-evidence.md](hook-evidence.md), live block + exit 2).
+  and is separately proven to fire (see [hook-evidence.md](hook-evidence.md), live block + exit 2). The hook's value
+  rests on that evidence, not on this A/B.
 
 ## What didn't change (honest)
 
 - **A also behaved well on this task.** Both A runs chose a *new* `003_*.sql` too — the bait (editing `002`) did not
-  catch a violation, so this experiment does not demonstrate the hook changing an edit decision; it demonstrates
-  cheaper, more consistent, procedure-following runs. The hook's blocking behaviour is proven separately in
-  hook-evidence.md.
+  catch a violation in either arm, so this experiment does not demonstrate the hook changing an edit decision; it
+  demonstrates cheaper, more consistent, procedure-following runs.
 - **The final diff shape is the same** on both sides (new migration + lib + tests). The harness changed *how* the
   agent got there (fewer turns, named procedure, verified tests), not *what* it produced.
-- Tests were only verified for B (see ¹ above) — an asymmetry in method, stated rather than hidden.
+- Tests were only verified for B (see ¹ above) — A runs could not execute `npm test` in `-p` mode and were never
+  verified afterwards. An asymmetry in method, stated rather than hidden.
 
 ## Environment
 
