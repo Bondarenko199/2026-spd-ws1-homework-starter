@@ -4,7 +4,18 @@
 // Blocks Edit/Write/MultiEdit on an APPLIED db/migrations/*.sql file (one tracked in git).
 // Creating a NEW migration file — or fixing an uncommitted one — is allowed.
 import { execFileSync } from "node:child_process";
-import { isAbsolute, resolve, relative, sep } from "node:path";
+import { isAbsolute, resolve, relative, sep, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
+
+/** realpath for things that exist; resolve-only for those that don't yet (new files). */
+function canonical(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
 
 let raw = "";
 process.stdin.on("data", (chunk) => (raw += chunk));
@@ -21,11 +32,16 @@ process.stdin.on("end", () => {
 
   // CLAUDE_PROJECT_DIR is set by Claude Code; fall back to the repo root derived from this
   // script's own location (script lives at <root>/.claude/hooks/) so the hook still works
-  // if the agent has cd'd elsewhere in the session.
+  // if the agent has cd'd elsewhere in the session. fileURLToPath (not URL.pathname) so
+  // paths with spaces or other URL-encoded characters resolve correctly.
   const projectRoot = process.env.CLAUDE_PROJECT_DIR
-    ?? resolve(new URL("..", import.meta.url).pathname, "..");
+    ? canonical(process.env.CLAUDE_PROJECT_DIR)
+    : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
-  const abs = isAbsolute(filePath) ? filePath : resolve(projectRoot, filePath);
+  // Canonicalize both sides so symlink aliases (/tmp vs /private/tmp on macOS, or a
+  // user-level symlink to the repo) still compare equal — otherwise relative() reports
+  // a false ../ escape and the hook silently allows an applied-migration edit.
+  const abs = canonical(isAbsolute(filePath) ? filePath : resolve(projectRoot, filePath));
 
   // Only care about migration SQL files inside this project.
   const rel = relative(projectRoot, abs);

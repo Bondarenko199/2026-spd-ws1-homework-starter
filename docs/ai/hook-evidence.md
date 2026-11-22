@@ -66,8 +66,9 @@ The hook distinguishes **tracked** (applied) migrations from untracked ones, res
 | T4 | absolute path, tracked migration | 2 | 2 |
 | T5 | existing but untracked migration file (`003_tmp.sql`) — fix-in-place allowed | 0 | 0 |
 | T6 | foreign cwd + `CLAUDE_PROJECT_DIR` set | 2 | 2 |
-| T7 | foreign cwd, no env var (fallback via script location) | 2 | 2 |
+| T7 | foreign cwd, no env var (fallback via script location, `env -u`) | 2 | 2 |
 | T8 | `CLAUDE_PROJECT_DIR` points at a nonexistent repo (git errors) — fail closed | 2 | 2 |
+| T9 | repo at a path with a space, reached via a symlink alias (`/tmp` → `/private/tmp`), foreign cwd, no env var — Codex PR finding | 2 | 2 (was 0 before the fix: root and target canonicalized with `realpath`, script location via `fileURLToPath`) |
 
 ## Known limits (stated honestly)
 
