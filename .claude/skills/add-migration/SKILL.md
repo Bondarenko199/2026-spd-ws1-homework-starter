@@ -7,7 +7,9 @@ description: Add a new SQLite schema migration to this repo the safe way - new n
 
 # Add a migration
 
-1. **Never edit an existing `db/migrations/*.sql`** — they are immutable once applied (a hook enforces this).
+1. **Never edit a committed `db/migrations/*.sql`** (tracked in git) — they are immutable once applied, and a hook
+   blocks edits to tracked migration files (exit 2). A **new, uncommitted** migration is yours to fix in place while
+   you author it — but do **not** `git add` it until `npm test` is green (step 5), because tracking it makes it immutable.
 2. Find the next number: `ls db/migrations/` and take the highest `0NN` prefix + 1.
 3. Create `db/migrations/<NNN>_<what_it_does>.sql` — filename states the change (`003_add_task_priority.sql`).
    Plain SQL only; SQLite dialect; one concern per file. Constraints go in the SQL (`check`, `not null`, defaults)

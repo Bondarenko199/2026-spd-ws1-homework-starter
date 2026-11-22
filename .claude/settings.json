@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node .claude/hooks/protect-migrations.mjs",
+            "command": "node \"${CLAUDE_PROJECT_DIR}/.claude/hooks/protect-migrations.mjs\"",
             "timeout": 10
           }
         ]
