@@ -22,7 +22,9 @@ Method: fresh `git clone` into an empty directory for every run (A clones contai
 
 ¹ In A runs the agent could not execute `npm test` (no Bash permission in `-p` mode) and no one verified the result
 afterwards — the diff was captured but the "tests green" box was never checked. Reported as-is.
-² In B runs I ran `npm test` on the finished worktree after each session: 8 passed, 7 passed.
+² In B runs I ran `npm test` on the finished clone after each session: 8 passed, 7 passed. (The B agent itself
+added tests, so the clone's suite grew beyond the repo's baseline 4; the 8/7 counts are from the clones, not this
+branch, which still has the original 4.)
 
 ## What changed
 
