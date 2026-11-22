@@ -15,11 +15,13 @@ description: Add a new SQLite schema migration to this repo the safe way - new n
 4. **If the change touches `lib/tasks.ts` mapping or validation, update it and its tests in the same PR.**
 5. Verify from a clean state — this is the check that makes the migration trustworthy:
    ```bash
-   npm run db:reset   # deletes data/tasks.db
-   npm test           # migrations re-run on a fresh DB inside the tests
+   npm test           # tests run on openDb(":memory:") — every migration re-applies from zero
    npm run typecheck
    ```
-   All three must be green. A migration that only works on an existing DB is a failed migration.
+   Both must be green. Because the test DB is in-memory, `npm test` alone proves the migration applies to a
+   fresh database; a migration that only works on an existing DB is a failed migration.
+   (`npm run db:reset` also resets the on-disk dev DB, but it is permission-gated for agents — `npm test`
+   covers the same guarantee.)
 6. If the SQL is destructive (`drop table`, `delete` without `where`, column drops), add a rollback note to the PR
    description: how to restore the previous state.
 7. Mention the new file in the PR body so the reviewer sees it is a *new* migration, not an edit.

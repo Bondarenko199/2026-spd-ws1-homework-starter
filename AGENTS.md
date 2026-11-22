@@ -9,7 +9,7 @@ Team agent rules live here. Do **not** create `CLAUDE.md` — this file is the s
 - `npm test` — vitest run (must be green before any PR)
 - `npm run typecheck` — `tsc --noEmit` (must be green)
 - `npm run dev` — app at http://localhost:3000 (writes nothing into AGENTS.md: `agentRules: false` is set)
-- `npm run db:reset` — deletes the local SQLite file; migrations re-run on next start
+- `npm run db:reset` — deletes the local SQLite dev DB; **human-run only, denied for agents** — for a fresh-DB check run `npm test` (tests use an in-memory DB and re-apply all migrations from zero)
 
 ## Hard rules
 
