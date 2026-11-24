@@ -14,18 +14,21 @@ import { realpathSync } from "node:fs";
  * that does not exist yet (a brand-new migration file, or a tracked file deleted from
  * the working tree but still in git). Plain resolve() is not enough: a path through a
  * symlink would keep its alias form and escape the db/migrations classification.
+ * realpathSync.native (not the JS realpath) also normalizes case on case-insensitive
+ * filesystems (macOS APFS, Windows), so DB/Migrations/001.SQL cannot alias the tracked
+ * db/migrations/001.sql.
  */
 function canonical(p) {
   const abs = resolve(p);
   try {
-    return realpathSync(abs);
+    return realpathSync.native(abs);
   } catch {
     // find the longest existing prefix, realpath it, re-append the non-existent tail
     const parts = abs.split(sep);
     for (let i = parts.length - 1; i > 0; i--) {
       const head = parts.slice(0, i).join(sep);
       try {
-        return realpathSync(head) + sep + parts.slice(i).join(sep);
+        return realpathSync.native(head) + sep + parts.slice(i).join(sep);
       } catch {
         if (dirname(head) === head) break; // reached the filesystem root, stop
         // prefix doesn't exist either, walk further up
@@ -61,20 +64,25 @@ process.stdin.on("end", () => {
   // a false ../ escape and the hook silently allows an applied-migration edit.
   const abs = canonical(isAbsolute(filePath) ? filePath : resolve(projectRoot, filePath));
 
-  // Only care about migration SQL files inside this project.
+  // Only care about migration SQL files inside this project. Compare case-insensitively:
+  // on case-insensitive filesystems (macOS APFS, Windows) DB/Migrations/X.SQL is the same
+  // file as db/migrations/x.sql, and the .SQL extension must not escape the check either.
   const rel = relative(projectRoot, abs);
+  const relLower = rel.toLowerCase();
   const isMigration = !rel.startsWith("..") && !isAbsolute(rel)
-    && rel.split(sep).slice(0, 2).join(sep) === ["db", "migrations"].join(sep)
-    && rel.endsWith(".sql");
+    && relLower.split(sep).slice(0, 2).join(sep) === ["db", "migrations"].join(sep)
+    && relLower.endsWith(".sql");
   if (!isMigration) process.exit(0);
 
   // "Applied" = tracked by git. A brand-new, never-committed migration can still be fixed
   // in place (the add-migration skill's verify step may reveal a typo); once committed it
-  // is immutable and must be superseded by a new numbered migration.
+  // is immutable and must be superseded by a new numbered migration. Git pathspecs are
+  // case-sensitive, so query the tracked list and match case-insensitively instead of
+  // trusting the payload's casing.
   let tracked = false;
   try {
-    execFileSync("git", ["ls-files", "--error-unmatch", rel], { cwd: projectRoot, stdio: "ignore" });
-    tracked = true;
+    const listed = execFileSync("git", ["ls-files", "--", rel], { cwd: projectRoot, encoding: "utf8" });
+    tracked = listed.split("\n").some((f) => f.toLowerCase() === relLower);
   } catch (e) {
     if (e.status === 1) {
       tracked = false; // git ran fine and reported the file as untracked

@@ -73,6 +73,13 @@ The hook distinguishes **tracked** (applied) migrations from untracked ones, res
 | T11 | symlinked file inside the repo (`alias-001.sql → db/migrations/001_create_tasks.sql`) | 2 | 2 |
 | T12 | brand-new file under the symlinked directory (untracked) — must stay allowed | 0 | 0 |
 | T13 | tracked migration deleted from the working tree but still in git, written via the symlinked directory (nearest-existing-ancestor canonicalization) | 2 | 2 (was 0 before the `canonical()` ancestor walk — found by testing, not in the Codex report) |
+| T14 | fully nonexistent path (`/nonexistent/a/b.sql`) — must exit 0 without hanging | 0 | 0 |
+| T15 | case-variant directory: `DB/Migrations/001_create_tasks.sql` (same file on case-insensitive FS) — instructor finding | 2 | 2 (was 0 before `realpathSync.native` + case-insensitive classification) |
+| T16 | uppercase extension: `db/migrations/001_create_tasks.SQL` | 2 | 2 (was 0) |
+| T17 | both variants: `DB/Migrations/001_create_tasks.SQL` | 2 | 2 (was 0) |
+| T18 | new untracked `DB/Migrations/003_new.sql` — case-variant path must stay allowed for new files | 0 | 0 |
+| T19 | tracked file deleted, case-variant path (`DB/Migrations/...`) — tail keeps caller's case, so git lookup matches case-insensitively | 2 | 2 |
+| T20 | tracked file deleted, correct-case path — regression guard for T19 | 2 | 2 |
 
 ## Known limits (stated honestly)
 

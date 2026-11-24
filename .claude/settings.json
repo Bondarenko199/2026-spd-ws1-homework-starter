@@ -7,7 +7,9 @@
       "Read(**/*.pem)",
       "Bash(sed -i * db/migrations/*)",
       "Bash(*> db/migrations/*.sql*)",
-      "Bash(npm run db:reset)"
+      "Bash(npm run db:reset)",
+      "Bash(npm run db:reset *)",
+      "Bash(node scripts/db-reset.mjs*)"
     ],
     "ask": [
       "Bash(git push*)",

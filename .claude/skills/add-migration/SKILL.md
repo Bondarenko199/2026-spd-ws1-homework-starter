@@ -28,4 +28,6 @@ description: Add a new SQLite schema migration to this repo the safe way - new n
    description: how to restore the previous state.
 7. Mention the new file in the PR body so the reviewer sees it is a *new* migration, not an edit.
 
-Check: a fresh clone (`rm -rf data && npm test`) reproduces the whole schema from the migration files alone.
+Check: `npm test && npm run typecheck` — the tests open an in-memory DB (`openDb(":memory:")`), so the suite itself
+reproduces the whole schema from the migration files alone. No need to delete `data/` (its `.gitkeep` is tracked,
+and `npm run db:reset` is human-run only anyway).
