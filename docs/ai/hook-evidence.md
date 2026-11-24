@@ -89,6 +89,10 @@ The hook distinguishes **tracked** (applied) migrations from untracked ones, res
   (code review #3). The real backstops are CODEOWNERS review and the L0 rule in the team agreement.
 - "Applied" is approximated by "tracked in git". If the git check errors, the hook fails closed (treats the file as
   applied and blocks). Editing a *committed-then-reverted* migration is also blocked — deliberate, since it was applied.
+- Case handling is deliberately fail-closed: classification and the git lookup compare paths case-insensitively
+  (needed on macOS/Windows where `DB/Migrations/X.SQL` *is* the tracked file). On a case-sensitive filesystem a
+  genuinely different path with different casing (e.g. `DB/Migrations/009_new.sql` on Linux) is therefore also
+  blocked — an over-block, but the safe direction.
 - The `Read(.env.*)` deny rule is deliberately broad: it also blocks `.env.example` (fake values, but the agent has
   no reason to read any dotenv file). Observed side effect: some git commands print a harmless
   `.env.example: Operation not permitted` line in sandboxed sessions — likely because the file-read denial reaches
