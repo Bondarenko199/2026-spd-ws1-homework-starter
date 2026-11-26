@@ -87,6 +87,10 @@ const block = [
   ["R6 non-string file_path (crash guard)", 2, JSON.stringify({tool_name:"Edit",tool_input:{file_path:123}})],
   ["R6b object file_path (crash guard)",    2, JSON.stringify({tool_name:"Edit",tool_input:{file_path:{nested:true}}})],
   ["R-garbage non-empty payload",   2, "this is not json at all {"],
+  // cd-adjacent routes (found by probing the dirContext narrowing; `/simplify` round 3)
+  ["R11 cd db + sed -i migrations/001", 2, bash("cd db && sed -i 's/1/2/' migrations/001_create_tasks.sql")],
+  ["R12 cd db + rm migrations/001",     2, bash("cd db && rm migrations/001_create_tasks.sql")],
+  ["R13 cd db/ + truncate migrations/…",2, bash("cd db/ && truncate -s0 migrations/001_create_tasks.sql")],
 ];
 for (const [label, want, payload] of block) {
   const got = run(payload);
@@ -100,6 +104,9 @@ const allow = [
   ["R3c git checkout -b branch",    0, bash("git checkout -b add-migrations-support")],
   ["R3d grep install (false verb)", 0, bash("grep -rn install db/migrations")],
   ["R3e tee to a .log file",        0, bash("npm test | tee migrations.log")],
+  ["R14 cd db + ls migrations/ (read-only)", 0, bash("cd db && ls migrations/")],
+  ["R15 cd db + cat migrations/001 (read-only)", 0, bash("cd db && cat migrations/001_create_tasks.sql")],
+  ["R16 cd db + tee out.log (non-migration target)", 0, bash("cd db && npm run x | tee out.log")],
   ["R8 2>&1 on cat (fd-dup)",       0, bash("cat db/migrations/001_create_tasks.sql 2>&1")],
   ["R8b git diff > /tmp (out sink)",0, bash("git diff -- db/migrations > /tmp/mig.diff")],
   ["R-empty payload (manual run)",  0, ""],

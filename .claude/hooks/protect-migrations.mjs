@@ -5,7 +5,7 @@
 // db/migrations/*.sql file (one tracked in git). Creating a NEW migration file — or fixing
 // an uncommitted one — is allowed, on either route. Any unexpected error fails closed.
 import { execFileSync } from "node:child_process";
-import { isAbsolute, resolve, relative, sep, dirname, basename } from "node:path";
+import { isAbsolute, resolve, relative, sep, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 
@@ -114,7 +114,7 @@ process.stdin.on("end", () => {
   }
 });
 
-function main(payload, rawInput) {
+function main(payload) {
   // ── Bash route: the Edit/Write guard is bypassable via shell commands, so inspect the
   // command line too. Extract migration-file arguments, resolve them (honouring `cd`),
   // classify with the shared classifier, and block only if a referenced file is TRACKED
@@ -172,13 +172,16 @@ function main(payload, rawInput) {
       for (const m of cmd.matchAll(/(?:^|&&|\|\||;)\s*cd\s+([^\s;|&]+)/gi)) {
         const cdAbs = canonical(isAbsolute(m[1]) ? m[1] : resolve(root, m[1]));
         const cdRel = relative(root, cdAbs).split(sep).join("/").toLowerCase();
-        if (!cdRel.startsWith("..") && !isAbsolute(cdRel)) cwdDir = cdRel.endsWith("/") ? cdRel : cdRel + "/";
+        if (!cdRel.startsWith("..") && !isAbsolute(cdRel)) {
+          cwdDir = cdRel.endsWith("/") ? cdRel : cdRel + "/";
+        }
       }
       for (const cand of candidates) {
         let relLower = migrationRel(cand, root);
         if (!relLower && cwdDir) {
-          // bare filename after a cd into db/migrations: classify the joined path
-          relLower = migrationRel(cwdDir + basename(cand), root);
+          // bare or dir-relative filename after a cd: classify the joined path
+          // (covers both `cd db/migrations && … 001.sql` and `cd db && … migrations/001.sql`)
+          relLower = migrationRel(cwdDir + cand, root);
         }
         if (!relLower) continue;
         resolvedAny = true;
@@ -194,11 +197,13 @@ function main(payload, rawInput) {
       return;
     }
     if (!resolvedAny) {
-      // unresolvable write target: fail closed only when the command plausibly targets
-      // the migrations directory itself (e.g. `cd db/migrations && sed -i …`, `rsync …
-      // db/migrations/`). A write verb whose only "migrations" mention is a non-migration
-      // file (`tee migrations.log`) resolves cleanly outside db/migrations and stays allowed.
-      const dirContext = /(^|[^\w])(db[\/\\]+migrations)([\/\\\s;|&"']|$)/i.test(cmd);
+      // unresolvable write target: fail closed when the command plausibly targets the
+      // migrations directory — either the full `db/migrations` path or any path segment
+      // named `migrations` (covers `cd db && … migrations/001.sql` and globs). A write
+      // verb whose only "migrations" mention is a non-migration file (`tee
+      // migrations.log` — the dot is not a separator) stays allowed.
+      const dirContext = /(^|[^\w])(db[\/\\]+migrations)([\/\\\s;|&"']|$)/i.test(cmd)
+        || /(^|[^\w.])migrations([\/\\\s;|&"']|$)/i.test(cmd);
       if (dirContext) {
         blockBash(cmd);
         return;
