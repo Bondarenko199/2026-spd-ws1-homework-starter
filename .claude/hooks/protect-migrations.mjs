@@ -41,15 +41,92 @@ function canonical(p) {
 let raw = "";
 process.stdin.on("data", (chunk) => (raw += chunk));
 process.stdin.on("end", () => {
+  // strip a leading UTF-8 BOM — JSON.parse throws on it and the hook would fail open
+  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+
   let payload;
   try {
     payload = JSON.parse(raw);
   } catch {
-    process.exit(0); // unreadable payload: fail open, the permission system still applies
+    // Non-empty but unparseable payload: fail closed (exit 2) — the safe direction for an
+    // immutability guard; Claude Code shows stderr so the block is diagnosable.
+    // Empty stdin (hook run manually without input): nothing to guard, exit 0.
+    if (raw.trim().length > 0) {
+      console.error("BLOCKED: hook received an unparseable payload (fail-closed).");
+      process.exitCode = 2;
+      return;
+    }
+    process.exit(0);
   }
 
-  const filePath = payload?.tool_input?.file_path;
-  if (!filePath) process.exit(0);
+  // ── Bash route: the Edit/Write guard is bypassable via shell commands, so inspect the
+  // command line too. The check mirrors the file-route logic: extract migration-file
+  // arguments from the command, resolve each against the project root, and block only if
+  // a referenced file is TRACKED (applied). A redirect to a brand-new 003_*.sql stays
+  // allowed, exactly like Write of a new migration. Fail closed: a write verb combined
+  // with a migrations reference we cannot resolve cleanly is also blocked.
+  if (payload?.tool_name === "Bash") {
+    const cmd = String(payload?.tool_input?.command ?? "");
+    const cmdLower = cmd.toLowerCase();
+    const projectRootBash = process.env.CLAUDE_PROJECT_DIR
+      ? canonical(process.env.CLAUDE_PROJECT_DIR)
+      : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+    const referencesMigrations =
+      cmdLower.includes("migrations")
+      || /(^|[^a-z0-9])\d{2,3}_[a-z0-9_]+\.sql/.test(cmdLower);
+    if (!referencesMigrations) process.exit(0); // unrelated command, nothing to guard
+
+    // redirects to null sinks are not writes to the repo
+    const cmdNoSink = cmd.replace(/>\s*\/dev\/null/g, " ").replace(/>>\s*\/dev\/null/g, " ");
+    const writeish =
+      /(^|\s|;|&&|\|\|)(sed\s+-[^i]*i|perl\s+-[^e]*pi?e?|tee|cp|mv|rm|truncate|dd|install|patch)\b/.test(cmdLower)
+      || /(^|\s)(git\s+(restore|checkout|clean)(\s|$))/.test(cmdLower)
+      || /(^|\s)(heredoc\b|<<)/.test(cmd)
+      || />|>>/.test(cmdNoSink);
+    if (!writeish) process.exit(0); // read-only mention (cat, ls, git log, grep…)
+
+    // candidate migration file paths mentioned in the command (basename or path form)
+    const candidates = new Set();
+    for (const m of cmd.matchAll(/[\w.\/\\-]*\d{2,3}_[\w-]*\.sql/gi)) candidates.add(m[0]);
+    for (const m of cmd.matchAll(/db[\/\\]+migrations[\w.\/\\-]*/gi)) candidates.add(m[0]);
+
+    // If no concrete file can be extracted (e.g. `cd db/migrations && sed -i …`), or the
+    // command writes with an unresolvable target, fail closed.
+    let resolvedAny = false;
+    let trackedHit = false;
+    for (const cand of candidates) {
+      const absCand = canonical(isAbsolute(cand) ? cand : resolve(projectRootBash, cand));
+      const relCand = relative(projectRootBash, absCand).split(sep).join("/");
+      if (relCand.startsWith("..") || isAbsolute(relCand)) continue;
+      if (!relCand.toLowerCase().startsWith("db/migrations/") || !relCand.toLowerCase().endsWith(".sql")) continue;
+      resolvedAny = true;
+      try {
+        const listed = execFileSync("git", ["ls-files", "--", relCand], { cwd: projectRootBash, encoding: "utf8" });
+        if (listed.split("\n").some((f) => f.toLowerCase() === relCand.toLowerCase())) { trackedHit = true; break; }
+      } catch {
+        trackedHit = true; break; // git failed — fail closed
+      }
+    }
+    if (trackedHit || (writeish && !resolvedAny)) {
+      console.error(
+        `BLOCKED: this shell command could modify an applied migration (db/migrations is immutable).\n` +
+        `Command: ${cmd.slice(0, 200)}\n` +
+        `Instead, add a NEW numbered migration per .claude/skills/add-migration/SKILL.md`,
+      );
+      process.exitCode = 2;
+      return;
+    }
+    process.exit(0); // write routed at untracked/new files only
+  }
+
+  const filePathRaw = payload?.tool_input?.file_path;
+  if (!filePathRaw) process.exit(0);
+  // Windows-style backslash separators: normalize to the host's separator so that a
+  // payload written with \ (Claude Code on Windows, or a copy-pasted path) classifies the
+  // same as one written with /. Harmless on POSIX, where a literal \ in a filename is
+  // rare and fail-closed is the safe direction.
+  const filePath = filePathRaw.replace(/[\\/]+/g, sep);
 
   // CLAUDE_PROJECT_DIR is set by Claude Code; fall back to the repo root derived from this
   // script's own location (script lives at <root>/.claude/hooks/) so the hook still works
@@ -68,9 +145,12 @@ process.stdin.on("end", () => {
   // on case-insensitive filesystems (macOS APFS, Windows) DB/Migrations/X.SQL is the same
   // file as db/migrations/x.sql, and the .SQL extension must not escape the check either.
   const rel = relative(projectRoot, abs);
-  const relLower = rel.toLowerCase();
+  // Windows: relative() yields backslash separators, but git ls-files prints forward
+  // slashes — normalize before any comparison.
+  const relGit = rel.split(sep).join("/");
+  const relLower = relGit.toLowerCase();
   const isMigration = !rel.startsWith("..") && !isAbsolute(rel)
-    && relLower.split(sep).slice(0, 2).join(sep) === ["db", "migrations"].join(sep)
+    && relLower.startsWith("db/migrations/")
     && relLower.endsWith(".sql");
   if (!isMigration) process.exit(0);
 
@@ -81,7 +161,7 @@ process.stdin.on("end", () => {
   // trusting the payload's casing.
   let tracked = false;
   try {
-    const listed = execFileSync("git", ["ls-files", "--", rel], { cwd: projectRoot, encoding: "utf8" });
+    const listed = execFileSync("git", ["ls-files", "--", relGit], { cwd: projectRoot, encoding: "utf8" });
     tracked = listed.split("\n").some((f) => f.toLowerCase() === relLower);
   } catch (e) {
     if (e.status === 1) {

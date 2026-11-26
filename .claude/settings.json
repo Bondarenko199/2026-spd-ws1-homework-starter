@@ -5,8 +5,7 @@
       "Read(.env)",
       "Read(.env.*)",
       "Read(**/*.pem)",
-      "Bash(sed -i * db/migrations/*)",
-      "Bash(*> db/migrations/*.sql*)",
+      "Bash(sed -i*migrations*)",
       "Bash(npm run db:reset)",
       "Bash(npm run db:reset *)",
       "Bash(node scripts/db-reset.mjs*)"
@@ -29,7 +28,7 @@
   "hooks": {
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit",
+        "matcher": "Edit|Write|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",

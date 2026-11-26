@@ -81,14 +81,37 @@ The hook distinguishes **tracked** (applied) migrations from untracked ones, res
 | T19 | tracked file deleted, case-variant path (`DB/Migrations/...`) — tail keeps caller's case, so git lookup matches case-insensitively | 2 | 2 |
 | T20 | tracked file deleted, correct-case path — regression guard for T19 | 2 | 2 |
 
+Second-round instructor review (2026-11-25, lost rubric point): Bash-route gaps, Windows separators, BOM fail-open.
+
+| # | Case | Expected | Got |
+|---|---|---|---|
+| B1 | `echo x>db/migrations/001_…sql` (no space after `>`) — instructor's exact case | 2 | 2 (was 0: deny glob needed a space) |
+| B2 | `echo x>>db/migrations/001_…sql` (no space) | 2 | 2 (was 0) |
+| B3 | `cd db/migrations && sed -i 's/120/200/' 001_…sql` — relative after cd | 2 | 2 (was 0) |
+| B4 | spaced redirect `echo x >> db/migrations/…` | 2 | 2 |
+| B5 | full-path `sed -i … /abs/db/migrations/001_…sql` | 2 | 2 |
+| B6 | case-variant redirect `echo x > DB/Migrations/001_…sql` | 2 | 2 |
+| B7 | `echo x \| tee db/migrations/001_…sql` | 2 | 2 |
+| B8 | `git restore db/migrations/001_…sql` | 2 | 2 |
+| B9 | `rm db/migrations/001_…sql` | 2 | 2 |
+| A1–A9 | read-only routes stay allowed: cat, ls, `git diff -- db/migrations`, `npm test`, `git log -- db/migrations`, grep, `2>/dev/null`, commit message mentioning migrations | 0 | 0 |
+| A5 | redirect to a NEW untracked `003_…sql` stays allowed (same semantics as Write) | 0 | 0 |
+| W1 | Windows-style backslash path payload (`…\db\migrations\001_…sql`) | 2 | 2 (was 0 on Windows per instructor: `git ls-files` prints forward slashes; `rel` normalized before comparison) |
+| BOM | payload with leading UTF-8 BOM — parsed and blocked | 2 | 2 (was 0: JSON.parse threw, hook failed open) |
+
 ## Known limits (stated honestly)
 
-- The hook guards Edit/Write/MultiEdit file paths only. Bash routes to the same files are covered by deny rules
-  (`sed -i`, redirects) **as a second layer, not exhaustively**: `tee`, `cp`, `perl -pi`, `node scripts/db-reset.mjs`,
-  `rm data/tasks.db*`, `git restore db/migrations/...` and `rm db/migrations/<untracked>.sql` are accepted bypasses
-  (code review #3). The real backstops are CODEOWNERS review and the L0 rule in the team agreement.
+- The hook guards Edit/Write/MultiEdit/Bash. The Bash branch resolves migration-file arguments from the command
+  text and blocks when a referenced file is tracked (same tracked/case/symlink logic as the file route), or fails
+  closed when a write verb plus a migrations reference cannot be resolved. Residual Bash gaps: obfuscated routes
+  (variables, wildcards like `rm db/migratio*`, subshells building the path) can still slip past the argument
+  extraction — the fail-closed fallback catches some but not all. The real backstops are CODEOWNERS review and
+  the L0 rule in the team agreement.
+- The `Bash(sed -i*migrations*)` deny rule is a cheap backstop on top of the hook; redirect-to-/dev/null and other
+  read-only redirects are not treated as writes.
 - "Applied" is approximated by "tracked in git". If the git check errors, the hook fails closed (treats the file as
   applied and blocks). Editing a *committed-then-reverted* migration is also blocked — deliberate, since it was applied.
+- A non-empty payload that fails to parse (after BOM strip) is blocked (fail closed); an empty payload exits 0.
 - Case handling is deliberately fail-closed: classification and the git lookup compare paths case-insensitively
   (needed on macOS/Windows where `DB/Migrations/X.SQL` *is* the tracked file). On a case-sensitive filesystem a
   genuinely different path with different casing (e.g. `DB/Migrations/009_new.sql` on Linux) is therefore also
