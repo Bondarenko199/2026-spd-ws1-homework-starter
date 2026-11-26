@@ -5,7 +5,7 @@
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, cpSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, cpSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const R = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."); // repo root from docs/ai/
@@ -52,6 +52,9 @@ const cases = [
   ["T17 both variants",           2, JSON.stringify({tool_name:"Edit",tool_input:{file_path:R + "/DB/Migrations/001_create_tasks.SQL"}})],
   ["T18 new case-variant untracked", 0, JSON.stringify({tool_name:"Write",tool_input:{file_path:R + "/DB/Migrations/003_new.sql"}})],
   ["T14 fully nonexistent path",  0, JSON.stringify({tool_name:"Edit",tool_input:{file_path:"/nonexistent/a/b.sql"}})],
+  // environment-dependent round-1/2 cases (foreign cwd): use runEnv below
+  ["T19 tracked deleted, case-variant path", 2, JSON.stringify({tool_name:"Write",tool_input:{file_path:R + "/DB/Migrations/001_create_tasks.sql"}})],
+  ["T20 tracked deleted, correct-case path", 2, JSON.stringify({tool_name:"Write",tool_input:{file_path:R + "/db/migrations/001_create_tasks.sql"}})],
 ];
 // environment-dependent cases: run(payload, env)
 const runEnv = (payload, env) => {
@@ -161,13 +164,36 @@ for (const [label, want, payload] of allow) {
     console.log((ok ? "PASS" : "FAIL") + " " + label + ": got " + got + ", want " + want);
   }
   // non-ASCII tracked name (quotePath bug repro)
+  // NOTE: 003_draft.sql (line 145) is intentionally still untracked here — do NOT git-add it.
   writeFileSync(S + "/db/migrations/004_créer_tâches.sql", "-- non-ascii name\n");
-  g("add", "-A"); g("-c","user.email=t@t","-c","user.name=t","commit","-q","-m","y");
+  execFileSync("git", ["add", "db/migrations/002_Mixed_Case.sql", "db/migrations/004_créer_tâches.sql"], { cwd: S, stdio: "ignore" });
+  g("-c","user.email=t@t","-c","user.name=t","commit","-q","-m","y");
   {
     const got = runIn(editPath(S + "/db/migrations/004_créer_tâches.sql"));
     const ok = got === 2;
     if (!ok) fails++;
     console.log((ok ? "PASS" : "FAIL") + " R10 non-ASCII tracked name (quotePath): got " + got + ", want 2");
+  }
+  // symlink alias cases (round-2 Codex finding 2 + the deleted-via-alias gap found by testing)
+  symlinkSync("db/migrations", S + "/migration-link");
+  symlinkSync(S + "/db/migrations/001_create_tasks.sql", S + "/alias-001.sql");
+  const symCases = [
+    ["T10 dir-alias to tracked", 2, editPath(S + "/migration-link/001_create_tasks.sql")],
+    ["T11 file-symlink to tracked", 2, editPath(S + "/alias-001.sql")],
+    ["T12 new file under alias stays allowed", 0, editPath(S + "/migration-link/003_draft.sql")],
+  ];
+  for (const [label, want, payload] of symCases) {
+    const got = runIn(payload);
+    const ok = got === want;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " " + label + ": got " + got + ", want " + want);
+  }
+  unlinkSync(S + "/db/migrations/001_create_tasks.sql");
+  {
+    const got = runIn(editPath(S + "/migration-link/001_create_tasks.sql"));
+    const ok = got === 2;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " T13 deleted tracked via alias: got " + got + ", want 2");
   }
   rmSync(S, { recursive: true, force: true });
 }

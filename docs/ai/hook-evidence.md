@@ -5,10 +5,9 @@
 Hook: `.claude/hooks/protect-migrations.mjs`, wired in `.claude/settings.json` with matcher `Edit|Write|MultiEdit|NotebookEdit|Bash`.
 Payload used: [`docs/ai/sample-payload.json`](sample-payload.json).
 
-**Reproducible battery:** `node docs/ai/hook-battery.mjs` runs all battery-runnable cases below (B/A/W/BOM + T-series
-+ T8 fail-closed + the round-3 R-cases incl. a temp repo for pathspec-case/non-ASCII/cd scenarios) against the current
-hook and prints PASS/FAIL per case. It is the source of truth for the "Got" columns; only the symlink cases (T10–T13)
-stay manual (commands in the table).
+**Reproducible battery:** `node docs/ai/hook-battery.mjs` runs ALL cases below — 65 as of this writing, including the
+round-3 R-cases and the symlink cases (T10–T13), which run against a disposable temp repo the battery creates itself.
+It prints PASS/FAIL per case and is the source of truth for the "Got" columns.
 
 ## 1. Manual run (docs/ai/hook-test.md procedure)
 
