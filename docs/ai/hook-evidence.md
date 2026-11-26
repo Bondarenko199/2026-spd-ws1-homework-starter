@@ -2,8 +2,12 @@
 
 # Hook evidence — `protect-migrations` (PreToolUse, exit 2)
 
-Hook: `.claude/hooks/protect-migrations.mjs`, wired in `.claude/settings.json` with matcher `Edit|Write|MultiEdit`.
+Hook: `.claude/hooks/protect-migrations.mjs`, wired in `.claude/settings.json` with matcher `Edit|Write|MultiEdit|Bash`.
 Payload used: [`docs/ai/sample-payload.json`](sample-payload.json).
+
+**Reproducible battery:** `node docs/ai/hook-battery.mjs` runs all cases below (B/A/W/BOM + T-series + T8 fail-closed)
+against the current hook and prints PASS/FAIL per case. It is the source of truth for the "Got" columns; the
+symlink cases (T10–T13) need a temp repo with symlinks and stay manual (commands in the table).
 
 ## 1. Manual run (docs/ai/hook-test.md procedure)
 
