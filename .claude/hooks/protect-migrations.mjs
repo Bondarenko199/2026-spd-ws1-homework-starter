@@ -3,9 +3,9 @@
 // Exit 2 = block the tool call; the stderr text is shown to the agent as the reason.
 // Blocks Edit/Write/MultiEdit file paths AND Bash commands that would modify an APPLIED
 // db/migrations/*.sql file (one tracked in git). Creating a NEW migration file — or fixing
-// an uncommitted one — is allowed, on either route.
+// an uncommitted one — is allowed, on either route. Any unexpected error fails closed.
 import { execFileSync } from "node:child_process";
-import { isAbsolute, resolve, relative, sep, dirname } from "node:path";
+import { isAbsolute, resolve, relative, sep, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realpathSync } from "node:fs";
 
@@ -48,11 +48,16 @@ function projectRoot() {
     : resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 }
 
+/** One shared migration-filename shape: 1-4 digits + underscore + name, any separators.
+ * Used for the Bash pre-gate AND candidate extraction so the gate can never be stricter
+ * than the extraction (a stricter gate silently allows what extraction would have caught). */
+const MIG_NAME = /(?:^|[^\w.])((?:\d{1,4})_[\w.-]*\.sql)(?![\w.-])/gi;
+
 /**
  * Classify one absolute candidate path: canonicalize, relativize to the repo root
  * (forward slashes — git ls-files format), and test case-insensitively (case-insensitive
  * filesystems make DB/Migrations/X.SQL the same file as db/migrations/x.sql).
- * Returns the normalized slash-relative path for migration SQL files, else null.
+ * Returns the normalized lowercase slash-relative path for migration SQL files, else null.
  */
 function migrationRel(candidate, root) {
   const abs = canonical(isAbsolute(candidate) ? candidate : resolve(root, candidate));
@@ -64,104 +69,152 @@ function migrationRel(candidate, root) {
 }
 
 /**
- * "Applied" = tracked by git. A brand-new, never-committed migration can still be fixed
- * in place (the add-migration skill's verify step may reveal a typo); once committed it
- * is immutable and must be superseded by a new numbered migration.
- * Returns "tracked" | "untracked" | "error" — callers decide their fail direction.
- * Git pathspecs are case-sensitive, so query the tracked list and match
- * case-insensitively instead of trusting the payload's casing.
+ * The tracked list for db/migrations, fetched ONCE per invocation with -z (NUL
+ * separators) and core.quotepath=false (git would otherwise quote non-ASCII names and
+ * the JS-side comparison would miss them). Pathspec matching is case-sensitive, so the
+ * DIRECTORY is listed and the case-insensitive match happens here in JS — passing a
+ * lowercased path as a pathspec would filter tracked files with uppercase letters out
+ * before the comparison could run.
+ * Returns a Set of lowercased tracked paths, or null on any git error (callers fail closed).
  */
-function trackedState(relLower, root) {
+function trackedSet(root) {
   try {
-    const listed = execFileSync("git", ["ls-files", "--", relLower], { cwd: root, encoding: "utf8" });
-    return listed.split("\n").some((f) => f.toLowerCase() === relLower) ? "tracked" : "untracked";
-  } catch (e) {
-    if (e.status === 1) return "untracked"; // git ran fine and reported the file as untracked
-    return "error"; // git failed (not a repo, missing, ...) — callers fail closed
+    const out = execFileSync(
+      "git",
+      ["-c", "core.quotepath=false", "ls-files", "-z", "--", "db/migrations"],
+      { cwd: root, encoding: "utf8" },
+    );
+    return new Set(out.split("\0").filter(Boolean).map((f) => f.toLowerCase()));
+  } catch {
+    return null; // git failed (not a repo, missing, permission...) — callers fail closed
   }
 }
 
 let raw = "";
 process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("error", () => process.exit(2)); // stdin failure: fail closed
 process.stdin.on("end", () => {
-  // strip a leading UTF-8 BOM — JSON.parse throws on it and the hook would fail open
-  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
-
-  let payload;
   try {
-    payload = JSON.parse(raw);
-  } catch {
-    // Non-empty but unparseable payload: fail closed (exit 2) — the safe direction for an
-    // immutability guard; Claude Code shows stderr so the block is diagnosable.
-    // Empty stdin (hook run manually without input): nothing to guard, exit 0.
+    main(JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw));
+  } catch (e) {
+    // Empty stdin (hook run manually without input) legitimately has nothing to guard.
+    // Everything else that throws — malformed JSON, non-string payload fields, any bug —
+    // fails CLOSED (exit 2): an immutability guard must never fail open by crashing.
     if (raw.trim().length > 0) {
-      console.error("BLOCKED: hook received an unparseable payload (fail-closed).");
+      console.error("BLOCKED: hook could not process its input (fail-closed).");
+      if (e instanceof SyntaxError) {
+        console.error("(payload was not valid JSON)");
+      } else {
+        console.error(`(unexpected hook error: ${e?.message ?? e})`);
+      }
       process.exitCode = 2;
       return;
     }
     process.exit(0);
   }
+});
 
+function main(payload, rawInput) {
   // ── Bash route: the Edit/Write guard is bypassable via shell commands, so inspect the
-  // command line too. Extract migration-file arguments from the command text, classify
-  // each with the shared classifier, and block only if a referenced file is TRACKED
+  // command line too. Extract migration-file arguments, resolve them (honouring `cd`),
+  // classify with the shared classifier, and block only if a referenced file is TRACKED
   // (applied). A redirect to a brand-new 003_*.sql stays allowed, exactly like Write of a
-  // new migration. Fail closed: a write verb combined with a migrations reference we
-  // cannot resolve cleanly is also blocked.
+  // new migration. Fail closed when a write verb's target cannot be resolved cleanly.
   if (payload?.tool_name === "Bash") {
     const cmd = String(payload?.tool_input?.command ?? "");
     const cmdLower = cmd.toLowerCase();
-    const referencesMigrations =
-      cmdLower.includes("migrations")
-      || /(^|[^a-z0-9])\d{2,3}_[a-z0-9_]+\.sql/.test(cmdLower);
-    if (!referencesMigrations) process.exit(0); // unrelated command, nothing to guard
 
-    // redirects to null sinks are not writes to the repo; ">" subsumes ">>" in a match test
-    const cmdNoSink = cmd.replace(/>\s*\/dev\/null/g, " ");
+    // cheap pre-gate with the SAME name shape as extraction: if neither the directory nor
+    // a migration filename appears, nothing in this command can touch a migration.
+    if (!cmdLower.includes("migrations") && !MIG_NAME.test(cmdLower)) {
+      process.exit(0); // reset lastIndex not needed: process exits, and MIG_NAME has no g-state issue across runs
+    }
+    MIG_NAME.lastIndex = 0; // shared /g/ regex — reset before extraction reuse below
+
+    // null sinks and fd-duplication redirects (2>&1, >&2) are not writes to the repo
+    const cmdNoSink = cmd
+      .replace(/\d?>>&?\s*\/dev\/null/g, " ")
+      .replace(/\d?>>&?\d/g, " ");
+
+    // write verbs, anchored so `grep install`, `git checkout -b branch` and
+    // `tee migrations.log` (log file, not the migration) do not match. sed/perl require
+    // an in-place flag (-i, -i.bak, -ni, -Ei, --in-place); bare -n / -pe are read-only.
     const writeish =
-      /(^|\s|;|&&|\|\|)(sed\s+-[^i]*i|perl\s+-[^e]*pi?e?|tee|cp|mv|rm|truncate|dd|install|patch)\b/.test(cmdLower)
-      || /(^|\s)(git\s+(restore|checkout|clean)(\s|$))/.test(cmdLower)
-      || /(^|\s)(heredoc\b|<<)/.test(cmd)
-      || cmdNoSink.includes(">");
-    if (!writeish) process.exit(0); // read-only mention (cat, ls, git log, grep…)
+      /(^|\s|;|&&|\|\|)(sed\s+(-[^i\s]*i|i|-i\.[^\s]*|--in-place)|perl\s+(-[^e\s]*i\w*e|\w*e\s|.*\s(-i|--in-place)\s))\s/.test(cmdLower)
+      || /(^|\s|;|&&|\|\|)(tee|cp|mv|rm|truncate|dd|shred|mkfile|touch|rsync)\s/.test(cmdLower)
+        // target-file verbs: the verb matters only if a referenced file resolves to a
+        // tracked migration — the candidate loop below decides; tee to a .log file has no
+        // migration candidate and resolves nothing, so it is handled by resolvedAny below
+        // (its only candidate, "migrations", is not a file path and never resolves).
+      || /\bfind\b[^;|&]*-delete/.test(cmdLower)
+      || /(^|\s)(git\s+(restore|checkout\s+--|clean)(\s|$))/.test(cmdLower)
+      || /(^|\s)(<<|<<<)/.test(cmd)
+      || redirectTargetInRepo(cmdNoSink);
+
+    if (!writeish) process.exit(0); // read-only mention (cat, ls, git log, grep, 2>&1…)
 
     // candidate migration file paths mentioned in the command (basename or path form)
     const candidates = new Set();
-    for (const m of cmd.matchAll(/[\w.\/\\-]*\d{2,3}_[\w-]*\.sql/gi)) candidates.add(m[0]);
-    for (const m of cmd.matchAll(/db[\/\\]+migrations[\w.\/\\-]*/gi)) candidates.add(m[0]);
+    for (const m of cmd.matchAll(MIG_NAME)) candidates.add(m[1]);
+    MIG_NAME.lastIndex = 0;
+    for (const m of cmdNoSink.matchAll(/(?:^|[\s"'=;(])(db[\/\\]+migrations[\w.\/\\-]*\.sql|[\\\/]db[\/\\]+migrations[\w.\/\\-]*)/gi)) {
+      candidates.add(m[1]);
+    }
 
     const root = projectRoot();
+    const tracked = trackedSet(root); // null = git failed → fail closed below
     let resolvedAny = false;
-    for (const cand of candidates) {
-      const relLower = migrationRel(cand, root);
-      if (!relLower) continue;
-      resolvedAny = true;
-      if (trackedState(relLower, root) !== "untracked") {
-        // tracked (applied) → block; git error → fail closed
-        console.error(
-          `BLOCKED: this shell command could modify an applied migration (db/migrations is immutable).\n` +
-          `Command: ${cmd.slice(0, 200)}\n` +
-          `Instead, add a NEW numbered migration per .claude/skills/add-migration/SKILL.md`,
-        );
-        process.exitCode = 2;
-        return;
+    if (tracked) {
+      // honour `cd <dir>`: a bare basename after cd resolves against that directory.
+      // The cd target is classified as a plain in-repo path (no .sql requirement — it
+      // is usually the db/migrations directory itself).
+      let cwdDir = null;
+      for (const m of cmd.matchAll(/(?:^|&&|\|\||;)\s*cd\s+([^\s;|&]+)/gi)) {
+        const cdAbs = canonical(isAbsolute(m[1]) ? m[1] : resolve(root, m[1]));
+        const cdRel = relative(root, cdAbs).split(sep).join("/").toLowerCase();
+        if (!cdRel.startsWith("..") && !isAbsolute(cdRel)) cwdDir = cdRel.endsWith("/") ? cdRel : cdRel + "/";
+      }
+      for (const cand of candidates) {
+        let relLower = migrationRel(cand, root);
+        if (!relLower && cwdDir) {
+          // bare filename after a cd into db/migrations: classify the joined path
+          relLower = migrationRel(cwdDir + basename(cand), root);
+        }
+        if (!relLower) continue;
+        resolvedAny = true;
+        if (tracked.has(relLower)) {
+          blockBash(cmd);
+          return;
+        }
       }
     }
-    if (!resolvedAny) {
-      // writes with an unresolvable migration target (e.g. `cd db/migrations && sed -i …`)
-      console.error(
-        `BLOCKED: this shell command could modify an applied migration (db/migrations is immutable).\n` +
-        `Command: ${cmd.slice(0, 200)}\n` +
-        `Instead, add a NEW numbered migration per .claude/skills/add-migration/SKILL.md`,
-      );
-      process.exitCode = 2;
+    if (!tracked) {
+      // git failed → fail closed unconditionally
+      blockBash(cmd);
       return;
+    }
+    if (!resolvedAny) {
+      // unresolvable write target: fail closed only when the command plausibly targets
+      // the migrations directory itself (e.g. `cd db/migrations && sed -i …`, `rsync …
+      // db/migrations/`). A write verb whose only "migrations" mention is a non-migration
+      // file (`tee migrations.log`) resolves cleanly outside db/migrations and stays allowed.
+      const dirContext = /(^|[^\w])(db[\/\\]+migrations)([\/\\\s;|&"']|$)/i.test(cmd);
+      if (dirContext) {
+        blockBash(cmd);
+        return;
+      }
     }
     process.exit(0); // write routed at untracked/new files only
   }
 
   const filePathRaw = payload?.tool_input?.file_path;
-  if (!filePathRaw) process.exit(0);
+  if (filePathRaw === undefined || filePathRaw === null || filePathRaw === "") process.exit(0);
+  if (typeof filePathRaw !== "string") {
+    // unclassifiable payload: fail closed — we cannot tell what file the tool targets
+    console.error("BLOCKED: hook received a non-string file_path (fail-closed).");
+    process.exitCode = 2;
+    return;
+  }
   // Windows-style backslash separators: normalize to the host's separator so that a
   // payload written with \ (Claude Code on Windows, or a copy-pasted path) classifies the
   // same as one written with /. Harmless on POSIX, where a literal \ in a filename is
@@ -172,8 +225,9 @@ process.stdin.on("end", () => {
   const relLower = migrationRel(filePath, root);
   if (!relLower) process.exit(0); // not a migration SQL file inside this project
 
-  // allow only on a definite "untracked"; "tracked" and "error" both fail closed
-  if (trackedState(relLower, root) === "untracked") process.exit(0);
+  const tracked = trackedSet(root);
+  // allow only on a definite "untracked"; "tracked" and git-error (null) both fail closed
+  if (tracked && !tracked.has(relLower)) process.exit(0);
 
   console.error(
     `BLOCKED: editing an applied migration is forbidden (db/migrations is immutable once committed).\n` +
@@ -184,4 +238,31 @@ process.stdin.on("end", () => {
   // Set the exit code and let the process end naturally so stderr is flushed — an immediate
   // process.exit(2) can truncate the buffered message on pipes (code review finding #4).
   process.exitCode = 2;
-});
+}
+
+function blockBash(cmd) {
+  console.error(
+    `BLOCKED: this shell command could modify an applied migration (db/migrations is immutable).\n` +
+    `Command: ${cmd.slice(0, 200)}\n` +
+    `Instead, add a NEW numbered migration per .claude/skills/add-migration/SKILL.md`,
+  );
+  process.exitCode = 2;
+}
+
+/** A redirect counts as a write ONLY when its target resolves to a path inside the repo —
+ * `2>&1`, `>/dev/null`, `>/tmp/x`, `>/dev/null 2>&1` and other out-of-repo sinks are not
+ * writes to db/migrations. Returns true if any redirect target classifies as in-repo. */
+function redirectTargetInRepo(cmd) {
+  const root = projectRoot();
+  for (const m of cmd.matchAll(/>{1,2}\s*([^\s;|&]+)/g)) {
+    const target = m[1].replace(/^["']|["']$/g, "");
+    if (!target || target.startsWith("&")) continue; // >&N fd-duplication
+    const rel = migrationRel(target, root);
+    if (rel) return true; // redirect lands on a migration path inside the repo
+    // non-migration in-repo targets (e.g. a redirect into lib/) are not our concern
+    const abs = canonical(isAbsolute(target) ? target : resolve(root, target));
+    const r = relative(root, abs);
+    if (!r.startsWith("..") && !isAbsolute(r)) return true; // any in-repo redirect: let the candidate loop decide
+  }
+  return false; // all redirect targets are out-of-repo sinks
+}

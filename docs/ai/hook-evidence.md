@@ -2,18 +2,19 @@
 
 # Hook evidence — `protect-migrations` (PreToolUse, exit 2)
 
-Hook: `.claude/hooks/protect-migrations.mjs`, wired in `.claude/settings.json` with matcher `Edit|Write|MultiEdit|Bash`.
+Hook: `.claude/hooks/protect-migrations.mjs`, wired in `.claude/settings.json` with matcher `Edit|Write|MultiEdit|NotebookEdit|Bash`.
 Payload used: [`docs/ai/sample-payload.json`](sample-payload.json).
 
-**Reproducible battery:** `node docs/ai/hook-battery.mjs` runs all cases below (B/A/W/BOM + T-series + T8 fail-closed)
-against the current hook and prints PASS/FAIL per case. It is the source of truth for the "Got" columns; the
-symlink cases (T10–T13) need a temp repo with symlinks and stay manual (commands in the table).
+**Reproducible battery:** `node docs/ai/hook-battery.mjs` runs all battery-runnable cases below (B/A/W/BOM + T-series
++ T8 fail-closed + the round-3 R-cases incl. a temp repo for pathspec-case/non-ASCII/cd scenarios) against the current
+hook and prints PASS/FAIL per case. It is the source of truth for the "Got" columns; only the symlink cases (T10–T13)
+stay manual (commands in the table).
 
 ## 1. Manual run (docs/ai/hook-test.md procedure)
 
 ```
 $ node .claude/hooks/protect-migrations.mjs < docs/ai/sample-payload.json
-BLOCKED: editing an applied migration is forbidden (db/migrations is immutable once applied).
+BLOCKED: editing an applied migration is forbidden (db/migrations is immutable once committed).
 File: db/migrations/001_create_tasks.sql
 Instead, add a NEW numbered migration: db/migrations/<next-number>_<what_it_does>.sql
 Follow the add-migration skill: .claude/skills/add-migration/SKILL.md
@@ -105,12 +106,14 @@ Second-round instructor review (2026-11-25, lost rubric point): Bash-route gaps,
 
 ## Known limits (stated honestly)
 
-- The hook guards Edit/Write/MultiEdit/Bash. The Bash branch resolves migration-file arguments from the command
-  text and blocks when a referenced file is tracked (same tracked/case/symlink logic as the file route), or fails
-  closed when a write verb plus a migrations reference cannot be resolved. Residual Bash gaps: obfuscated routes
-  (variables, wildcards like `rm db/migratio*`, subshells building the path) can still slip past the argument
-  extraction — the fail-closed fallback catches some but not all. The real backstops are CODEOWNERS review and
-  the L0 rule in the team agreement.
+- The hook guards Edit/Write/MultiEdit/NotebookEdit/Bash. The Bash branch resolves migration-file arguments from the
+  command text and blocks when a referenced file is tracked (same tracked/case/symlink logic as the file route), or
+  fails closed when a write verb targets the migrations directory without a resolvable file. Residual Bash gaps:
+  obfuscated routes (variables, wildcards like `rm db/migratio*`, subshells building the path) and **symlink
+  aliases whose name mentions neither `migrations` nor an `NNN_*.sql` shape** (`ln -s db/migrations/001.sql
+  alias.sql` then `sed -i … alias.sql` — the file route catches the same alias, the Bash route's lexical gate does
+  not). Closing that means parsing shell semantics, out of scope for a text-scanning guard. The real backstops are
+  CODEOWNERS review and the L0 rule in the team agreement.
 - The `Bash(sed -i*migrations*)` deny rule is a cheap backstop on top of the hook; redirect-to-/dev/null and other
   read-only redirects are not treated as writes.
 - "Applied" is approximated by "tracked in git". If the git check errors, the hook fails closed (treats the file as

@@ -19,6 +19,7 @@ Team agent rules live here. Do **not** create `CLAUDE.md` — this file is the s
 - Business rules live in `lib/tasks.ts` (title 1..120, estimate 1..40h, `todo → doing → done`, done is final).
   Keep API handlers thin: they map `RuleViolation` to HTTP 422 and nothing else.
 - Tests next to the code they cover (`lib/*.test.ts`); no separate test dirs.
+- Next.js 16.4.6 is pinned here — your training-data Next.js knowledge may be stale; prefer `node_modules/next/dist/docs/` over recall.
 - No secrets, no client code, nothing under NDA — this repo is public.
 
 ## Pointers
