@@ -1,15 +1,17 @@
 // owner: @Bondarenko199 · why: the rubric requires verifiable hook evidence; this battery is the reproducible form of the manual tests in hook-evidence.md · review-by: 2027-02-22
 // Run: node docs/ai/hook-battery.mjs   (from anywhere; locates the repo via its own path)
-// Every case pipes a Claude Code PreToolUse payload into .claude/hooks/protect-migrations.mjs
-// and checks the exit code: 2 = block, 0 = allow.
+// Every case pipes a Claude Code payload into the hooks and checks the exit code:
+// PreToolUse (protect-migrations.mjs): 2 = block, 0 = allow.
+// PostToolUse (detect-migration-diff.mjs, round-5 D-cases): 2 = damage detected, 0 = clean.
 import { execFileSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, cpSync, writeFileSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdtempSync, cpSync, writeFileSync, rmSync, symlinkSync, unlinkSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 const R = resolve(dirname(fileURLToPath(import.meta.url)), "..", ".."); // repo root from docs/ai/
 const H = R + "/.claude/hooks/protect-migrations.mjs";
+const POST = R + "/.claude/hooks/detect-migration-diff.mjs";
 const run = (payload) => {
   try {
     execFileSync("node", [H], { input: payload, stdio: ["pipe", "ignore", "ignore"] });
@@ -197,10 +199,107 @@ for (const [label, want, payload] of allow) {
   }
   rmSync(S, { recursive: true, force: true });
 }
+
+// ── Round-5: payload-shape crash guard (#6) — wrong shapes must fail closed, never exit 1
+const shapeCases = [
+  ["X1 tool_input as string",   2, JSON.stringify({tool_name:"Edit",tool_input:"str"})],
+  ["X2 command as number",      2, JSON.stringify({tool_name:"Bash",tool_input:{command:123}})],
+  ["X3 file_path as number",    2, JSON.stringify({tool_name:"Edit",tool_input:{file_path:123}})],
+  ["X4 payload null",           2, "null"],
+  ["X5 payload array",          2, "[]"],
+];
+for (const [label, want, payload] of shapeCases) {
+  const got = run(payload);
+  const ok = got === want;
+  if (!ok) fails++;
+  console.log((ok ? "PASS" : "FAIL") + " " + label + ": got " + got + ", want " + want);
+}
+
+// ── Round-5: NotebookEdit coverage (#13) — notebook_path classifies like file_path
+const nbCases = [
+  ["N1 notebook_path to tracked", 2, JSON.stringify({tool_name:"NotebookEdit",tool_input:{notebook_path:R + "/db/migrations/001_create_tasks.sql"}})],
+  ["N2 notebook_path to new",     0, JSON.stringify({tool_name:"NotebookEdit",tool_input:{notebook_path:R + "/db/migrations/003_new.ipynb"}})],
+];
+for (const [label, want, payload] of nbCases) {
+  const got = run(payload);
+  const ok = got === want;
+  if (!ok) fails++;
+  console.log((ok ? "PASS" : "FAIL") + " " + label + ": got " + got + ", want " + want);
+}
+
 // BOM payload: must parse (BOM stripped) and BLOCK (exit 2) — was a fail-open before the fix
 const bomPayload = "﻿" + JSON.stringify({ tool_name: "Edit", tool_input: { file_path: "db/migrations/001_create_tasks.sql" } });
 const bomGot = run(bomPayload);
 const bomOk = bomGot === 2;
 if (!bomOk) fails++;
 console.log((bomOk ? "PASS" : "FAIL") + " BOM payload parses and blocks: got " + bomGot + ", want 2");
+
+// ── Round-5: uppercase-dir icase coverage (#2) + PostToolUse outcome detector ──
+// One temp repo with an UPPERCASE DB/Migrations dir (tracked on a case-sensitive FS):
+// exercises the :(icase) pathspec in trackedSet AND the detector's diff pathspec.
+{
+  const S = mkdtempSync(tmpdir() + "/hwpost-");
+  mkdirSync(S + "/DB/Migrations", { recursive: true });
+  cpSync(R + "/.claude", S + "/.claude", { recursive: true });
+  writeFileSync(S + "/DB/Migrations/001_Create.sql", "-- uppercase dir tracked\n");
+  const g = (...a) => execFileSync("git", a, { cwd: S, stdio: "ignore" });
+  g("init", "-q"); g("add", "-A"); g("-c","user.email=t@t","-c","user.name=t","commit","-q","-m","x");
+  const runIn = (hook, payload) => {
+    try {
+      execFileSync("node", [hook], { input: payload, stdio: ["pipe","ignore","ignore"], env: { ...process.env, CLAUDE_PROJECT_DIR: S } });
+      return 0;
+    } catch (e) { return e.status; }
+  };
+  const postCases = [
+    ["U1 uppercase dir: PreToolUse blocks tracked edit", 2, H, editPath(S + "/DB/Migrations/001_Create.sql")],
+    ["U2 uppercase dir: PreToolUse allows new file", 0, H, editPath(S + "/DB/Migrations/009_new.sql")],
+    ["D1 detector: clean tree exits 0", 0, POST, "{}"],
+  ];
+  for (const [label, want, hook, payload] of postCases) {
+    const got = runIn(hook, payload);
+    const ok = got === want;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " " + label + ": got " + got + ", want " + want);
+  }
+  // detector: modified tracked migration (simulates a scanner-missed spelling, e.g. perl -pi)
+  writeFileSync(S + "/DB/Migrations/001_Create.sql", "-- modified out-of-band\n");
+  {
+    const got = runIn(POST, "{}");
+    const ok = got === 2;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " D2 detector: modified tracked exits 2: got " + got + ", want 2");
+  }
+  // restore, then: untracked draft and staged-add must NOT fire (authoring workflow)
+  execFileSync("git", ["checkout", "--", "."], { cwd: S, stdio: "ignore" });
+  writeFileSync(S + "/DB/Migrations/003_draft.sql", "-- draft\n");
+  {
+    const got = runIn(POST, "{}");
+    const ok = got === 0;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " D4 detector: untracked draft exits 0: got " + got + ", want 0");
+  }
+  g("add", "DB/Migrations/003_draft.sql");
+  {
+    const got = runIn(POST, "{}");
+    const ok = got === 0;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " D4b detector: staged new migration exits 0: got " + got + ", want 0");
+  }
+  // deleted tracked migration must fire
+  rmSync(S + "/DB/Migrations/001_Create.sql");
+  {
+    const got = runIn(POST, "{}");
+    const ok = got === 2;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " D3 detector: deleted tracked exits 2: got " + got + ", want 2");
+  }
+  // detector: garbage payload must never crash with exit 1 (fail-open) — 0 or 2 both acceptable
+  {
+    const got = runIn(POST, "garbage {");
+    const ok = got !== 1;
+    if (!ok) fails++;
+    console.log((ok ? "PASS" : "FAIL") + " D5 detector: garbage payload never exits 1: got " + got);
+  }
+  rmSync(S, { recursive: true, force: true });
+}
 console.log(fails === 0 ? "ALL PASS" : fails + " FAILURES");

@@ -1,20 +1,7 @@
-# Handoff — <ticket> — <YYYY-MM-DD>
+<!-- owner: @Bondarenko199 · why: HOMEWORK.md deliverable 5 names this exact path; the source of truth is the template · review-by: 2027-02-22 -->
 
-<!-- Written at the end of a session so a fresh session (or a colleague) can continue without asking. -->
+# Handoff template
 
-**Goal:** <one sentence: what "done" means>
-
-**State**
-- Done: <what is finished, with PR / commit links>
-- In progress: <branch, what is half-done>
-- Not started: <remaining steps>
-
-**Next step:** <the single next action, concrete enough to start immediately>
-
-**Decisions made:** <decision — reason; link ADR or comment>
-
-**Open questions / blockers:** <who can answer>
-
-**How to verify:** <commands to run, what green looks like — e.g. `npm test && npm run typecheck`, app boots at :3000>
-
-**Links:** <ticket, PRs, contracts, docs>
+Copy [`docs/ai/templates/handoff.md`](templates/handoff.md) and fill it in at the end of a session — do not edit the
+template itself when writing a handoff. The template's sections: goal, state (done / in progress / not started),
+next step, decisions made, open questions, how to verify, links.

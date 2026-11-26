@@ -90,7 +90,10 @@ function trackedSet(root) {
   try {
     const out = execFileSync(
       "git",
-      ["-c", "core.quotepath=false", "ls-files", "-z", "--", "db/migrations"],
+      // :(icase) — a repo whose migrations dir has uppercase letters (tracked on a
+      // case-sensitive FS) must still be listed; without it the pathspec matches nothing
+      // and the guard would silently allow everything there.
+      ["-c", "core.quotepath=false", "ls-files", "-z", "--", ":(icase)db/migrations"],
       { cwd: root, encoding: "utf8" },
     );
     return new Set(out.split("\0").filter(Boolean).map((f) => f.toLowerCase()));
@@ -124,6 +127,30 @@ process.stdin.on("end", () => {
 });
 
 function main(payload) {
+  // Wrong-shape payloads (null, arrays, string tool_input, numeric command…) don't
+  // throw — they just degrade. An immutability guard must not silently degrade to
+  // allow: anything that is not the expected object shape fails closed.
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) {
+    console.error("BLOCKED: hook received a non-object payload (fail-closed).");
+    process.exitCode = 2;
+    return;
+  }
+  if (payload.tool_name !== undefined && typeof payload.tool_name !== "string") {
+    console.error("BLOCKED: hook received a non-string tool_name (fail-closed).");
+    process.exitCode = 2;
+    return;
+  }
+  if (payload.tool_input !== undefined && (typeof payload.tool_input !== "object" || payload.tool_input === null)) {
+    console.error("BLOCKED: hook received a non-object tool_input (fail-closed).");
+    process.exitCode = 2;
+    return;
+  }
+  if (payload.tool_name === "Bash" && payload.tool_input?.command !== undefined && typeof payload.tool_input.command !== "string") {
+    console.error("BLOCKED: hook received a non-string Bash command (fail-closed).");
+    process.exitCode = 2;
+    return;
+  }
+
   // ── Bash route: the Edit/Write guard is bypassable via shell commands, so inspect the
   // command line too. Extract migration-file arguments, resolve them (honouring `cd`),
   // classify with the shared classifier, and block only if a referenced file is TRACKED
@@ -217,7 +244,9 @@ function main(payload) {
     process.exit(0); // write routed at untracked/new files only
   }
 
-  const filePathRaw = payload?.tool_input?.file_path;
+  // NotebookEdit payloads carry notebook_path, not file_path — the matcher claims
+  // coverage, so read both.
+  const filePathRaw = payload?.tool_input?.file_path ?? payload?.tool_input?.notebook_path;
   if (filePathRaw === undefined || filePathRaw === null || filePathRaw === "") process.exit(0);
   if (typeof filePathRaw !== "string") {
     // unclassifiable payload: fail closed — we cannot tell what file the tool targets

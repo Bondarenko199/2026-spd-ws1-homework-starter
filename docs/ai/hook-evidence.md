@@ -107,16 +107,23 @@ Second-round instructor review (2026-11-25, lost rubric point): Bash-route gaps,
 
 - The hook guards Edit/Write/MultiEdit/NotebookEdit/Bash. The Bash branch resolves migration-file arguments from the
   command text and blocks when a referenced file is tracked (same tracked/case/symlink logic as the file route), or
-  fails closed when a write verb targets the migrations directory without a resolvable file. Residual Bash gaps:
-  obfuscated routes (variables, wildcards like `rm db/migratio*`, subshells building the path) and **symlink
-  aliases whose name mentions neither `migrations` nor an `NNN_*.sql` shape** (`ln -s db/migrations/001.sql
-  alias.sql` then `sed -i … alias.sql` — the file route catches the same alias, the Bash route's lexical gate does
-  not). Closing that means parsing shell semantics, out of scope for a text-scanning guard. The real backstops are
-  CODEOWNERS review and the L0 rule in the team agreement.
-- **Possible follow-up (not built):** a PostToolUse hook running `git diff --exit-code -- db/migrations` would
-  detect any damage the text scanner misses after the fact (interpreter writes, obfuscated routes). PreToolUse
-  prevents, PostToolUse detects — the two are complementary. Not added after a passing grade to keep review
-  surface small; the same one-liner belongs in CI if this repo ever gains any.
+  fails closed when a write verb targets the migrations directory without a resolvable file. Residual Bash gaps
+  (all **covered by the outcome detector below**, and additionally by CODEOWNERS review): obfuscated routes
+  (variables, wildcards like `rm db/migratio*`, subshells), symlink aliases with unrelated names, interpreter
+  writes (`node -e`, `python3 -c`), and the review round-5 spellings (`perl -pi -e`, BSD `sed -i''`, GNU
+  `sed -e … -i`, `git checkout <ref> --`, pipe-hugging verbs, `>|`).
+- **Outcome detector (implemented, round 5):** `.claude/hooks/detect-migration-diff.mjs` runs on PostToolUse (same
+  matcher) and fails when a TRACKED db/migrations file differs from HEAD (`--diff-filter=MDT` — staged *additions*
+  of new migrations, the authoring workflow, never fire). It closes every text-spelling bypass at the root: any
+  modification, however spelled, is a diff. Properties: it detects **after** the write and cannot undo it — the
+  stderr tells the agent to stop and ask the user to restore (agents cannot run `git restore/checkout` on
+  db/migrations, the PreToolUse guard blocks that by design); it nags on every later call until the file is
+  restored; it fails OPEN on git errors with a stderr note (a safety net must not wedge every tool call). Cost:
+  one `git diff` spawn per tool call.
+- The `Bash(sed -i*migrations*)` deny rule is a cheap backstop on top of the hook; redirect-to-/dev/null and other
+  read-only redirects are not treated as writes.
+- "Applied" is approximated by "tracked in git". If the git check errors, the hook fails closed (treats the file as
+  applied and blocks). Editing a *committed-then-reverted* migration is also blocked — deliberate, since it was applied.
 - The `Bash(sed -i*migrations*)` deny rule is a cheap backstop on top of the hook; redirect-to-/dev/null and other
   read-only redirects are not treated as writes.
 - "Applied" is approximated by "tracked in git". If the git check errors, the hook fails closed (treats the file as
