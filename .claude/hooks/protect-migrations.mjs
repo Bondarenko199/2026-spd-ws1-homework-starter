@@ -51,19 +51,28 @@ function projectRoot() {
 /** One shared migration-filename shape: 1-4 digits + underscore + name, any separators.
  * Used for the Bash pre-gate AND candidate extraction so the gate can never be stricter
  * than the extraction (a stricter gate silently allows what extraction would have caught). */
-const MIG_NAME = /(?:^|[^\w.])((?:\d{1,4})_[\w.-]*\.sql)(?![\w.-])/gi;
+const MIG_NAME = /(?:^|[^\w.])(\d{1,4}_[\w.-]*\.sql)(?![\w.-])/gi;
+
+/** Canonicalize + relativize a candidate to the repo root (lowercased, forward slashes —
+ * git ls-files format). Returns null when the path escapes the root. Shared first half of
+ * migrationRel, the cd-target resolution, and the redirect-target check, so the
+ * canonicalization contract lives in exactly one place. */
+function relToRoot(candidate, root) {
+  const abs = canonical(isAbsolute(candidate) ? candidate : resolve(root, candidate));
+  const rel = relative(root, abs).split(sep).join("/");
+  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  return rel.toLowerCase();
+}
 
 /**
- * Classify one absolute candidate path: canonicalize, relativize to the repo root
- * (forward slashes — git ls-files format), and test case-insensitively (case-insensitive
- * filesystems make DB/Migrations/X.SQL the same file as db/migrations/x.sql).
+ * Classify one candidate path: relToRoot, then require a migration SQL file under
+ * db/migrations/ (case-insensitive: case-insensitive filesystems make
+ * DB/Migrations/X.SQL the same file as db/migrations/x.sql).
  * Returns the normalized lowercase slash-relative path for migration SQL files, else null.
  */
 function migrationRel(candidate, root) {
-  const abs = canonical(isAbsolute(candidate) ? candidate : resolve(root, candidate));
-  const rel = relative(root, abs).split(sep).join("/");
-  const relLower = rel.toLowerCase();
-  if (rel.startsWith("..") || isAbsolute(rel)) return null;
+  const relLower = relToRoot(candidate, root);
+  if (!relLower) return null;
   if (!relLower.startsWith("db/migrations/") || !relLower.endsWith(".sql")) return null;
   return relLower;
 }
@@ -127,9 +136,9 @@ function main(payload) {
     // cheap pre-gate with the SAME name shape as extraction: if neither the directory nor
     // a migration filename appears, nothing in this command can touch a migration.
     if (!cmdLower.includes("migrations") && !MIG_NAME.test(cmdLower)) {
-      process.exit(0); // reset lastIndex not needed: process exits, and MIG_NAME has no g-state issue across runs
+      process.exit(0); // the .test() above advances MIG_NAME.lastIndex — reset before extraction
     }
-    MIG_NAME.lastIndex = 0; // shared /g/ regex — reset before extraction reuse below
+    MIG_NAME.lastIndex = 0; // load-bearing: matchAll clones the regex with the advanced lastIndex
 
     // null sinks and fd-duplication redirects (2>&1, >&2) are not writes to the repo
     const cmdNoSink = cmd
@@ -148,15 +157,14 @@ function main(payload) {
         // (its only candidate, "migrations", is not a file path and never resolves).
       || /\bfind\b[^;|&]*-delete/.test(cmdLower)
       || /(^|\s)(git\s+(restore|checkout\s+--|clean)(\s|$))/.test(cmdLower)
-      || /(^|\s)(<<|<<<)/.test(cmd)
-      || redirectTargetInRepo(cmdNoSink);
+      || /(^|\s)<</.test(cmd)
+      || redirectTargetInRepo(cmdNoSink, projectRoot());
 
     if (!writeish) process.exit(0); // read-only mention (cat, ls, git log, grep, 2>&1…)
 
     // candidate migration file paths mentioned in the command (basename or path form)
     const candidates = new Set();
     for (const m of cmd.matchAll(MIG_NAME)) candidates.add(m[1]);
-    MIG_NAME.lastIndex = 0;
     for (const m of cmdNoSink.matchAll(/(?:^|[\s"'=;(])(db[\/\\]+migrations[\w.\/\\-]*\.sql|[\\\/]db[\/\\]+migrations[\w.\/\\-]*)/gi)) {
       candidates.add(m[1]);
     }
@@ -166,15 +174,12 @@ function main(payload) {
     let resolvedAny = false;
     if (tracked) {
       // honour `cd <dir>`: a bare basename after cd resolves against that directory.
-      // The cd target is classified as a plain in-repo path (no .sql requirement — it
-      // is usually the db/migrations directory itself).
+      // The cd target is a plain in-repo path (no .sql requirement — it is usually the
+      // db/migrations directory itself).
       let cwdDir = null;
       for (const m of cmd.matchAll(/(?:^|&&|\|\||;)\s*cd\s+([^\s;|&]+)/gi)) {
-        const cdAbs = canonical(isAbsolute(m[1]) ? m[1] : resolve(root, m[1]));
-        const cdRel = relative(root, cdAbs).split(sep).join("/").toLowerCase();
-        if (!cdRel.startsWith("..") && !isAbsolute(cdRel)) {
-          cwdDir = cdRel.endsWith("/") ? cdRel : cdRel + "/";
-        }
+        const cdRel = relToRoot(m[1], root);
+        if (cdRel !== null) cwdDir = cdRel.endsWith("/") ? cdRel : cdRel + "/";
       }
       for (const cand of candidates) {
         let relLower = migrationRel(cand, root);
@@ -257,17 +262,13 @@ function blockBash(cmd) {
 /** A redirect counts as a write ONLY when its target resolves to a path inside the repo —
  * `2>&1`, `>/dev/null`, `>/tmp/x`, `>/dev/null 2>&1` and other out-of-repo sinks are not
  * writes to db/migrations. Returns true if any redirect target classifies as in-repo. */
-function redirectTargetInRepo(cmd) {
-  const root = projectRoot();
+function redirectTargetInRepo(cmd, root) {
   for (const m of cmd.matchAll(/>{1,2}\s*([^\s;|&]+)/g)) {
     const target = m[1].replace(/^["']|["']$/g, "");
     if (!target || target.startsWith("&")) continue; // >&N fd-duplication
-    const rel = migrationRel(target, root);
-    if (rel) return true; // redirect lands on a migration path inside the repo
-    // non-migration in-repo targets (e.g. a redirect into lib/) are not our concern
-    const abs = canonical(isAbsolute(target) ? target : resolve(root, target));
-    const r = relative(root, abs);
-    if (!r.startsWith("..") && !isAbsolute(r)) return true; // any in-repo redirect: let the candidate loop decide
+    // migration target → write; non-migration but in-repo → also a write (the candidate
+    // loop then decides); out-of-repo sink → not our concern
+    if (relToRoot(target, root) !== null) return true;
   }
   return false; // all redirect targets are out-of-repo sinks
 }

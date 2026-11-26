@@ -113,6 +113,10 @@ Second-round instructor review (2026-11-25, lost rubric point): Bash-route gaps,
   alias.sql` then `sed -i … alias.sql` — the file route catches the same alias, the Bash route's lexical gate does
   not). Closing that means parsing shell semantics, out of scope for a text-scanning guard. The real backstops are
   CODEOWNERS review and the L0 rule in the team agreement.
+- **Possible follow-up (not built):** a PostToolUse hook running `git diff --exit-code -- db/migrations` would
+  detect any damage the text scanner misses after the fact (interpreter writes, obfuscated routes). PreToolUse
+  prevents, PostToolUse detects — the two are complementary. Not added after a passing grade to keep review
+  surface small; the same one-liner belongs in CI if this repo ever gains any.
 - The `Bash(sed -i*migrations*)` deny rule is a cheap backstop on top of the hook; redirect-to-/dev/null and other
   read-only redirects are not treated as writes.
 - "Applied" is approximated by "tracked in git". If the git check errors, the hook fails closed (treats the file as
